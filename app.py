@@ -40,4 +40,6 @@ def get_ticker_data(ticker_symbol):
     return jsonify(data)
 
 if __name__ == '__main__':
+        # Utiliza el puerto definido por la variable de entorno PORT, o 5000 si no está definido
+    port = int(os.getenv("PORT", 5000))
     app.run(debug=True, host='0.0.0.0')
