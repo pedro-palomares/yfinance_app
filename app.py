@@ -1,37 +1,43 @@
-import matplotlib.pyplot as plt
-import mplfinance as mpf
-import io
-from flask import send_file
+import os
+import pickle
+import redis
+import yfinance as yf
+from flask import Flask, jsonify, request
 
-def plot_candlestick_chart(df, liquidity_zones):
-    # Configuración del estilo y tamaño del gráfico
-    mpf_style = mpf.make_mpf_style(base_mpf_style='charles', rc={'font.size': 8})
-    fig, ax = mpf.plot(df, type='candle', style=mpf_style, returnfig=True)
+app = Flask(__name__)
 
-    # Añadir zonas de liquidez como áreas sombreadas en el gráfico
-    for zone in liquidity_zones:
-        ax[0].axhspan(zone['lower'], zone['upper'], color='gray', alpha=0.3)
+# Configuración de Redis
+redis_host = os.getenv('REDIS_HOST', 'localhost')
+redis_port = int(os.getenv('REDIS_PORT', 6379))
+redis_db = int(os.getenv('REDIS_DB', 0))
+r = redis.Redis(host=redis_host, port=redis_port, db=redis_db)
 
-    # Guardar el gráfico en un buffer de bytes
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png')
-    buf.seek(0)
-    plt.close(fig)
-    return buf
+def get_data_from_cache(ticker_symbol):
+    """Intenta recuperar los datos del ticker desde la caché."""
+    try:
+        data = r.get(ticker_symbol)
+        if data:
+            return pickle.loads(data)
+    except Exception as e:
+        print(f"Error al obtener datos de la caché: {e}")
+    return None
 
-@app.route('/get_chart/<string:ticker_symbol>')
-def get_chart(ticker_symbol):
-    ticker = yf.Ticker(ticker_symbol)
-    df = ticker.history(period="1mo")
+def set_data_to_cache(ticker_symbol, data):
+    """Guarda los datos del ticker en la caché por una hora."""
+    try:
+        r.setex(ticker_symbol, 3600, pickle.dumps(data))  # Caché expira en 3600 segundos (1 hora)
+    except Exception as e:
+        print(f"Error al guardar datos en la caché: {e}")
 
-    if df.empty:
-        return jsonify({"error": "No data available for the specified ticker"}), 404
-
-    # Supongamos que esta función devuelve las zonas de liquidez como {'lower': precio1, 'upper': precio2}
-    liquidity_zones = [{'lower': 150, 'upper': 155}, {'lower': 160, 'upper': 165}]
-
-    buf = plot_candlestick_chart(df, liquidity_zones)
-    return send_file(buf, mimetype='image/png', as_attachment=True, attachment_filename='chart.png')
+@app.route('/ticker/<string:ticker_symbol>')
+def get_ticker_data(ticker_symbol):
+    """Endpoint para obtener datos del ticker."""
+    data = get_data_from_cache(ticker_symbol)
+    if data is None:
+        ticker = yf.Ticker(ticker_symbol)
+        data = ticker.history(period="1mo").to_dict()  # Obtiene datos históricos del último mes
+        set_data_to_cache(ticker_symbol, data)
+    return jsonify(data)
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0')
